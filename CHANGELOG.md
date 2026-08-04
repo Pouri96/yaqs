@@ -12,6 +12,10 @@ releases may include breaking changes.
 
 ### Added
 
+- added native support for gates acting on three or more qubits in circuit
+  simulation, including hardcoded CCX, CCZ, and CSWAP gates ([#NNN])
+  ([**@Pouri96**])
+
 - added custom one-site matrix observables for non-qubit local dimensions
 
   , including named position observables ([#497]) ([**@linusschulte**])
@@ -233,6 +237,7 @@ for previous changelogs._
 
 <!-- PR links -->
 
+[#NNN]: https://github.com/munich-quantum-toolkit/yaqs/pull/NNN
 [#497]: https://github.com/munich-quantum-toolkit/yaqs/pull/497
 [#519]: https://github.com/munich-quantum-toolkit/yaqs/pull/519
 [#518]: https://github.com/munich-quantum-toolkit/yaqs/pull/518
