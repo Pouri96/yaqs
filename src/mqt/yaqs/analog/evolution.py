@@ -27,6 +27,7 @@ def apply_unitary_evolution(
     sim_params: AnalogSimParams,
     *,
     normalize: bool = True,
+    energy_target: float | None = None,
 ) -> None:
     """Advance one unitary time step according to ``sim_params.evolution_mode``.
 
@@ -38,6 +39,9 @@ def apply_unitary_evolution(
             Ordinary physical states keep the default ``True``. Auxiliary correlator
             states (``B|ψ⟩``) should pass ``False`` so non-unitary probe amplitudes
             are preserved. TDVP ignores this flag.
+        energy_target: Normalized ``<H>`` of the initial state, restored after each BUG
+            compression when ``sim_params.conserve_energy`` is set. ``None`` (default)
+            leaves the step uncorrected. TDVP ignores this value.
 
     Raises:
         ValueError: If ``evolution_mode`` is not supported.
@@ -45,7 +49,7 @@ def apply_unitary_evolution(
     if sim_params.evolution_mode == EvolutionMode.TDVP:
         tdvp(state, hamiltonian, sim_params)
     elif sim_params.evolution_mode == EvolutionMode.BUG:
-        bug(state, hamiltonian, sim_params, normalize=normalize)
+        bug(state, hamiltonian, sim_params, normalize=normalize, energy_target=energy_target)
     else:
         msg = f"Unsupported evolution_mode: {sim_params.evolution_mode!r}"
         raise ValueError(msg)
