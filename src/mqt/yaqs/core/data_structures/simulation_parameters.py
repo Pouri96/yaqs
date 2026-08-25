@@ -275,6 +275,25 @@ def _validate_svd_threshold(svd_threshold: float) -> float:
     return svd_threshold
 
 
+def _validate_conserve_tol(conserve_tol: float) -> float:
+    """Validate the relative tolerance of the post-compression energy correction.
+
+    Args:
+        conserve_tol: Relative threshold below which the correction is skipped.
+
+    Returns:
+        The validated tolerance as a float.
+
+    Raises:
+        ValueError: If ``conserve_tol`` is non-finite or negative.
+    """
+    conserve_tol = float(conserve_tol)
+    if not np.isfinite(conserve_tol) or conserve_tol < 0.0:
+        msg = f"conserve_tol must be a finite non-negative float, got {conserve_tol!r}."
+        raise ValueError(msg)
+    return conserve_tol
+
+
 def _resolve_max_bond_dim(max_bond_dim: int | object | None, preset_value: int | None) -> int | None:
     """Resolve ``max_bond_dim`` from an explicit value or the preset default.
 
@@ -515,6 +534,9 @@ class AnalogSimParams(_ObservableOrderingMixin):
             Default is ``1``.
         tdvp_mode: TDVP integrator geometry (``"1site"``, ``"2site"``, or ``"dynamic"``).
             Default is ``"2site"``.
+        conserve_energy: If ``True``, restore ``<H>`` to its initial value after each BUG
+            compression sweep. Off by default; when off the evolution is unchanged.
+        conserve_tol: Relative threshold below which the energy correction is skipped.
     """
 
     def __init__(
@@ -537,6 +559,8 @@ class AnalogSimParams(_ObservableOrderingMixin):
         multi_time_observables: list[tuple[Observable, Observable]] | None = None,
         tdvp_sweeps: int = 1,
         tdvp_mode: TDVPMode = "2site",
+        conserve_energy: bool = False,
+        conserve_tol: float = 1e-12,
     ) -> None:
         """Physics simulation parameters initialization.
 
@@ -575,6 +599,14 @@ class AnalogSimParams(_ObservableOrderingMixin):
                 symmetric integrator step at ``dt / tdvp_sweeps`` (default ``1``).
             tdvp_mode: TDVP integrator geometry (``"1site"``, ``"2site"``, or ``"dynamic"``).
                 Default is ``"2site"``.
+            conserve_energy: If ``True``, restore ``<H>`` to its initial value after each
+                BUG compression sweep, by a rank-preserving displacement of the
+                orthogonality center. Applies to ``EvolutionMode.BUG`` only and presumes a
+                time-independent Hermitian Hamiltonian and no noise model. Off by default;
+                when off the evolution is unchanged.
+            conserve_tol: Relative threshold below which the energy correction is skipped,
+                measured as ``|<H> - target| < conserve_tol * max(1, |target|)``. A step
+                that discards no weight is therefore left bit-identical.
         """
         _validate_random_seed(random_seed)
         preset_values = SIMULATION_PRESETS[_validate_preset(preset)]
@@ -611,6 +643,8 @@ class AnalogSimParams(_ObservableOrderingMixin):
         )
         self.tdvp_sweeps = _validate_tdvp_sweeps(tdvp_sweeps)
         self.tdvp_mode = _validate_tdvp_mode(tdvp_mode)
+        self.conserve_energy = conserve_energy
+        self.conserve_tol = _validate_conserve_tol(conserve_tol)
 
 
 class DigitalSimParams(_ObservableOrderingMixin):
@@ -662,6 +696,9 @@ class DigitalSimParams(_ObservableOrderingMixin):
         tdvp_sweeps: Number of symmetric TDVP substeps per gate. Default is ``1``.
         tdvp_mode: TDVP integrator geometry (``"1site"``, ``"2site"``, or ``"dynamic"``).
             Default is ``"2site"``.
+        conserve_energy: If ``True``, restore ``<H>`` to its initial value after each BUG
+            compression sweep. Off by default; when off the evolution is unchanged.
+        conserve_tol: Relative threshold below which the energy correction is skipped.
     """
 
     dt = 1
@@ -684,6 +721,8 @@ class DigitalSimParams(_ObservableOrderingMixin):
         gate_mode: GateMode = "mpo",
         tdvp_sweeps: int = 1,
         tdvp_mode: TDVPMode = "2site",
+        conserve_energy: bool = False,
+        conserve_tol: float = 1e-12,
     ) -> None:
         """Initialize digital circuit simulation parameters.
 
@@ -714,6 +753,13 @@ class DigitalSimParams(_ObservableOrderingMixin):
             gate_mode: Gate update mode (default ``"mpo"``).
             tdvp_sweeps: Number of symmetric TDVP substeps per gate (default ``1``).
             tdvp_mode: TDVP integrator geometry (default ``"2site"``).
+            conserve_energy: If ``True``, restore ``<H>`` to its initial value after each
+                BUG compression sweep, by a rank-preserving displacement of the
+                orthogonality center. Applies to ``EvolutionMode.BUG`` only and presumes a
+                time-independent Hermitian Hamiltonian. Off by default; when off the
+                evolution is unchanged.
+            conserve_tol: Relative threshold below which the energy correction is skipped,
+                measured as ``|<H> - target| < conserve_tol * max(1, |target|)``.
 
         Raises:
             ValueError: If ``shots`` is not a positive integer when provided.
@@ -748,3 +794,5 @@ class DigitalSimParams(_ObservableOrderingMixin):
         self.gate_mode = _validate_gate_mode(gate_mode)
         self.tdvp_sweeps = _validate_tdvp_sweeps(tdvp_sweeps)
         self.tdvp_mode = _validate_tdvp_mode(tdvp_mode)
+        self.conserve_energy = conserve_energy
+        self.conserve_tol = _validate_conserve_tol(conserve_tol)
