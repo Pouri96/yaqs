@@ -3,6 +3,8 @@
 
 # Generated benchmark data and reports
 **/raw_results.json
+energy_correction/l16_*.json
+energy_correction/six_site_correction_check.json
 **/summary.csv
 **/RESULTS.md
 **/VALIDATION.md
