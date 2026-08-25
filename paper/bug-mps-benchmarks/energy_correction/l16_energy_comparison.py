@@ -72,17 +72,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dts", default=",".join(str(dt) for dt in _runner.DT_GRID))
     parser.add_argument("--total-time", type=float, default=_runner.TOTAL_TIME)
     parser.add_argument("--trace-every", type=int, default=10, help="Steps between trace samples")
+    parser.add_argument(
+        "--max-bond",
+        type=int,
+        default=_runner.MAX_BOND,
+        help=(
+            "Hard bond cap. The manuscript's Table II uses 512, which is inactive; "
+            "its Table III sweeps 32, 64, 96, where the cap binds and truncation is "
+            "the dominant error source."
+        ),
+    )
     parser.add_argument("--output", type=Path, default=HERE / "l16_energy_comparison.json")
     return parser.parse_args()
 
 
-def step_parameters(dt: float, *, conserve: bool, tol: float) -> AnalogSimParams:
+def step_parameters(dt: float, *, conserve: bool, tol: float, max_bond: int) -> AnalogSimParams:
     """Return single-step BUG parameters matching the manuscript settings.
 
     Args:
         dt: Full physical timestep.
         conserve: Whether to arm the energy correction.
         tol: Relative guard of the correction.
+        max_bond: Hard bond cap.
 
     Returns:
         Configured :class:`AnalogSimParams`.
@@ -91,7 +102,7 @@ def step_parameters(dt: float, *, conserve: bool, tol: float) -> AnalogSimParams
         elapsed_time=dt,
         dt=dt,
         evolution_mode=EvolutionMode.BUG,
-        max_bond_dim=_runner.MAX_BOND,
+        max_bond_dim=max_bond,
         trunc_mode="relative_discarded_weight",
         svd_threshold=_runner.THRESHOLD,
         krylov_tol=_runner.KRYLOV_TOL,
@@ -140,6 +151,7 @@ def evolve(
     conserve: bool,
     tol: float,
     trace_every: int,
+    max_bond: int,
 ) -> dict[str, Any]:
     """Evolve one variant to the final time, recording traces.
 
@@ -151,19 +163,20 @@ def evolve(
         conserve: Whether to arm the energy correction.
         tol: Relative guard of the correction.
         trace_every: Sampling stride for the traces.
+        max_bond: Hard bond cap.
 
     Returns:
         The final state vector, traces, firing counts, and wall time.
     """
     state = deepcopy(initial)
     local_mpo = deepcopy(mpo)
-    params = step_parameters(dt, conserve=conserve, tol=tol)
+    params = step_parameters(dt, conserve=conserve, tol=tol, max_bond=max_bond)
     target = energy_expectation(state, local_mpo)
 
     times: list[float] = []
     energy_drift: list[float] = []
     norm_drift: list[float] = []
-    max_bond: list[int] = []
+    max_bond_trace: list[int] = []
 
     # Diagnostics are excluded from the wall time: sampling the trace costs a
     # full environment contraction, which at the Haldane-Shastry ranks is
@@ -178,7 +191,7 @@ def evolve(
                 times.append((step + 1) * dt)
                 energy_drift.append(abs(energy_expectation(state, local_mpo) - target))
                 norm_drift.append(abs(float(state.scalar_product(state).real) - 1.0))
-                max_bond.append(int(state.get_max_bond()))
+                max_bond_trace.append(int(state.get_max_bond()))
 
     return {
         "target_energy": target,
@@ -186,7 +199,7 @@ def evolve(
         "times": times,
         "energy_drift": energy_drift,
         "norm_drift": norm_drift,
-        "max_bond": max_bond,
+        "max_bond": max_bond_trace,
         "final_bond_profile": _runner.bond_profile(state),
         "hook_calls": counter.calls,
         "firings": counter.firings,
@@ -204,7 +217,7 @@ def main() -> None:
     # the manuscript runner.
     primitives.DENSE_THRESHOLD = -1
 
-    payload: dict[str, Any] = {"total_time": args.total_time, "results": []}
+    payload: dict[str, Any] = {"total_time": args.total_time, "max_bond_dim": args.max_bond, "results": []}
     for model in models:
         print(f"[{model}] building fixtures and exact reference", flush=True)
         mpo = _runner.direct_ising_mpo() if model == "tfim" else _runner.direct_haldane_shastry_mpo()
@@ -226,6 +239,7 @@ def main() -> None:
                     conserve=conserve,
                     tol=tol,
                     trace_every=args.trace_every,
+                    max_bond=args.max_bond,
                 )
                 vector = result.pop("vector")
                 row = {
@@ -235,6 +249,7 @@ def main() -> None:
                     "variant": name,
                     "conserve_energy": conserve,
                     "conserve_tol": tol,
+                    "max_bond_dim": args.max_bond,
                     "infidelity": _runner.infidelity(reference, vector),
                     "phase_error": _runner.phase_error(reference, vector),
                     **result,
