@@ -20,7 +20,11 @@ from mqt.yaqs.analog.analog_tjm import capture_energy_target
 from mqt.yaqs.core.data_structures.mpo import MPO
 from mqt.yaqs.core.data_structures.mps import MPS
 from mqt.yaqs.core.data_structures.noise_model import NoiseModel
-from mqt.yaqs.core.data_structures.simulation_parameters import AnalogSimParams, EvolutionMode
+from mqt.yaqs.core.data_structures.simulation_parameters import (
+    AnalogSimParams,
+    DigitalSimParams,
+    EvolutionMode,
+)
 from mqt.yaqs.core.methods.bug import (
     _postprocess_bug_state,  # ruff: ignore[import-private-name]  # placement inside the compression step is pinned here
     bug,
@@ -364,7 +368,31 @@ def test_correction_adds_to_the_compression_error_orthogonally() -> None:
 def test_conserve_energy_defaults_to_off() -> None:
     """The feature is opt-in on both parameter classes."""
     assert AnalogSimParams(elapsed_time=0.1, dt=0.1).conserve_energy is False
-    assert AnalogSimParams(elapsed_time=0.1, dt=0.1).conserve_tol == pytest.approx(1e-12)
+    assert AnalogSimParams(elapsed_time=0.1, dt=0.1).conserve_tol == pytest.approx(1e-13)
+    assert DigitalSimParams().conserve_tol == pytest.approx(1e-13)
+
+
+def test_default_guard_leaves_an_uncompressed_run_bit_identical() -> None:
+    """At the default tolerance the guard stays shut when nothing is discarded.
+
+    This pins the choice of default: the guard must not open on the local solver's
+    residual alone, or an exact step stops being a no-op and the compatibility with
+    the uncompressed conservation statement is lost. Short chains are the binding
+    case, since their residual is largest relative to the guard.
+    """
+    for shapes in ([(2, 1, 4), (2, 4, 4), (2, 4, 1)], [(2, 1, 4), (2, 4, 8), (2, 8, 4), (2, 4, 1)]):
+        reference = random_mps(shapes)
+        mpo = MPO.ising(len(shapes), 1.0, 0.5)
+        target = energy_expectation(reference, mpo)
+        plain = deepcopy(reference)
+        corrected = deepcopy(reference)
+        default_tol = AnalogSimParams(elapsed_time=0.1, dt=0.1).conserve_tol
+        off = sim_params(conserve_energy=False, max_bond_dim=None, conserve_tol=default_tol)
+        on = sim_params(conserve_energy=True, max_bond_dim=None, conserve_tol=default_tol)
+        for _ in range(10):
+            bug(plain, mpo, off)
+            bug(corrected, mpo, on, energy_target=target)
+        assert tensors_identical(plain, corrected)
 
 
 def test_conserve_tol_rejects_invalid_values() -> None:

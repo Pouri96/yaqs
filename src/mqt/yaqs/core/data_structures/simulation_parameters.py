@@ -560,7 +560,7 @@ class AnalogSimParams(_ObservableOrderingMixin):
         tdvp_sweeps: int = 1,
         tdvp_mode: TDVPMode = "2site",
         conserve_energy: bool = False,
-        conserve_tol: float = 1e-12,
+        conserve_tol: float = 1e-13,
     ) -> None:
         """Physics simulation parameters initialization.
 
@@ -606,7 +606,11 @@ class AnalogSimParams(_ObservableOrderingMixin):
                 when off the evolution is unchanged.
             conserve_tol: Relative threshold below which the energy correction is skipped,
                 measured as ``|<H> - target| < conserve_tol * max(1, |target|)``. A step
-                that discards no weight is therefore left bit-identical.
+                that discards no weight is therefore left bit-identical. The default is
+                the tightest value that keeps that property on short chains, where the
+                local solver's residual is largest relative to the guard; tightening it
+                further improves the restored value only while the truncation is mild,
+                and costs the bit-identical uncompressed step.
         """
         _validate_random_seed(random_seed)
         preset_values = SIMULATION_PRESETS[_validate_preset(preset)]
@@ -722,7 +726,7 @@ class DigitalSimParams(_ObservableOrderingMixin):
         tdvp_sweeps: int = 1,
         tdvp_mode: TDVPMode = "2site",
         conserve_energy: bool = False,
-        conserve_tol: float = 1e-12,
+        conserve_tol: float = 1e-13,
     ) -> None:
         """Initialize digital circuit simulation parameters.
 
@@ -759,7 +763,8 @@ class DigitalSimParams(_ObservableOrderingMixin):
                 time-independent Hermitian Hamiltonian. Off by default; when off the
                 evolution is unchanged.
             conserve_tol: Relative threshold below which the energy correction is skipped,
-                measured as ``|<H> - target| < conserve_tol * max(1, |target|)``.
+                measured as ``|<H> - target| < conserve_tol * max(1, |target|)``. A step
+                that discards no weight is therefore left bit-identical.
 
         Raises:
             ValueError: If ``shots`` is not a positive integer when provided.
