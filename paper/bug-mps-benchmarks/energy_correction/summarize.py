@@ -18,12 +18,24 @@ from typing import Any
 
 HERE = Path(__file__).resolve().parent
 
-VARIANT_LABELS = {
-    "bug": "BUG",
-    "bug_ec_1e-12": "BUG+EC (tol 1e-12)",
-    "bug_ec_1e-14": "BUG+EC (tol 1e-14)",
-}
-VARIANT_ORDER = ("bug", "bug_ec_1e-12", "bug_ec_1e-14")
+def variant_label(row: dict[str, Any]) -> str:
+    """Return the display label for one result row.
+
+    Returns:
+        ``BUG`` for the uncorrected variant, otherwise ``BUG+EC (tol ...)``.
+    """
+    if not row["conserve_energy"]:
+        return "BUG"
+    return f"BUG+EC (tol {row['conserve_tol']:.0e})"
+
+
+def variant_key(row: dict[str, Any]) -> tuple[int, float]:
+    """Return a sort key placing the uncorrected variant first, then loosest guard first.
+
+    Returns:
+        A tuple usable as a sort key.
+    """
+    return (int(row["conserve_energy"]), -row["conserve_tol"])
 
 
 def parse_args() -> argparse.Namespace:
@@ -75,13 +87,11 @@ def main() -> None:
         print("\n| h | variant | infidelity | \\|<H> - o0\\| | chi | firings | wall (s) |")
         print("|---:|:---|---:|---:|---:|---:|---:|")
         for dt in sorted({key[0] for key in block}):
-            for variant in VARIANT_ORDER:
-                row = block.get((dt, variant))
-                if row is None:
-                    continue
+            rows_at_dt = sorted((row for key, row in block.items() if key[0] == dt), key=variant_key)
+            for row in rows_at_dt:
                 fired = "--" if not row["conserve_energy"] else f"{row['firings']}/{row['hook_calls']}"
                 print(
-                    f"| {dt:g} | {VARIANT_LABELS[variant]} | {row['infidelity']:.4e} | "
+                    f"| {dt:g} | {variant_label(row)} | {row['infidelity']:.4e} | "
                     f"{row['energy_drift'][-1]:.3e} | {row['max_bond'][-1]} | {fired} | "
                     f"{row['wall_seconds']:.1f} |"
                 )
@@ -89,17 +99,18 @@ def main() -> None:
         # Rank preservation and state inertness, stated as ratios against BUG.
         print("\nRatios against uncorrected BUG (1.000 = inert):")
         for dt in sorted({key[0] for key in block}):
-            base = block.get((dt, "bug"))
+            rows_at_dt = sorted((row for key, row in block.items() if key[0] == dt), key=variant_key)
+            base = next((row for row in rows_at_dt if not row["conserve_energy"]), None)
             if base is None:
                 continue
             parts = []
-            for variant in VARIANT_ORDER[1:]:
-                row = block.get((dt, variant))
-                if row is None:
+            for row in rows_at_dt:
+                if not row["conserve_energy"]:
                     continue
                 ratio = row["infidelity"] / base["infidelity"] if base["infidelity"] > 0 else float("nan")
                 same_bond = row["max_bond"] == base["max_bond"]
-                parts.append(f"{VARIANT_LABELS[variant]}: I x{ratio:.6f}, bonds {'identical' if same_bond else 'DIFFER'}")
+                bonds = "identical" if same_bond else "DIFFER"
+                parts.append(f"{variant_label(row)}: I x{ratio:.6f}, bonds {bonds}")
             print(f"  h={dt:g}  " + ";  ".join(parts))
 
 
