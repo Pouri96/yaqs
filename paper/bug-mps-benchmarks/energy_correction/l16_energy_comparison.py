@@ -54,11 +54,8 @@ from mqt.yaqs.core.methods.bug import bug  # noqa: E402
 from mqt.yaqs.core.methods.conservation import energy_expectation  # noqa: E402
 from mqt.yaqs.core.methods.tdvp import primitives  # noqa: E402
 
-VARIANTS: tuple[tuple[str, bool, float], ...] = (
-    ("bug", False, 1e-12),
-    ("bug_ec_1e-12", True, 1e-12),
-    ("bug_ec_1e-14", True, 1e-14),
-)
+DEFAULT_TOLS = (1e-13,)
+
 
 
 def parse_args() -> argparse.Namespace:
@@ -82,8 +79,24 @@ def parse_args() -> argparse.Namespace:
             "the dominant error source."
         ),
     )
+    parser.add_argument(
+        "--tols",
+        default=",".join(str(tol) for tol in DEFAULT_TOLS),
+        help="Comma-separated conserve_tol values to run the corrected variant at.",
+    )
     parser.add_argument("--output", type=Path, default=HERE / "l16_energy_comparison.json")
     return parser.parse_args()
+
+
+def build_variants(tols: list[float]) -> list[tuple[str, bool, float]]:
+    """Return the uncorrected variant followed by one corrected variant per tolerance.
+
+    Returns:
+        ``(label, conserve_energy, conserve_tol)`` triples.
+    """
+    variants: list[tuple[str, bool, float]] = [("bug", False, tols[0])]
+    variants.extend((f"bug_ec_{tol:.0e}", True, tol) for tol in tols)
+    return variants
 
 
 def step_parameters(dt: float, *, conserve: bool, tol: float, max_bond: int) -> AnalogSimParams:
@@ -212,6 +225,7 @@ def main() -> None:
     args = parse_args()
     models = [item.strip() for item in args.models.split(",") if item.strip()]
     dts = [float(item) for item in args.dts.split(",") if item.strip()]
+    variants = build_variants([float(item) for item in args.tols.split(",") if item.strip()])
 
     # One shared matrix-free adaptive Lanczos for every local exponential, as in
     # the manuscript runner.
@@ -230,7 +244,7 @@ def main() -> None:
 
         for dt in dts:
             steps = int(round(args.total_time / dt))
-            for name, conserve, tol in VARIANTS:
+            for name, conserve, tol in variants:
                 result = evolve(
                     initial,
                     mpo,
