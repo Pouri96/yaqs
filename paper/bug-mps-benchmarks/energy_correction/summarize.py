@@ -24,6 +24,8 @@ def variant_label(row: dict[str, Any]) -> str:
     Returns:
         ``BUG`` for the uncorrected variant, otherwise ``BUG+EC (tol ...)``.
     """
+    if row.get("method", "bug") == "tdvp":
+        return "2-TDVP"
     if not row["conserve_energy"]:
         return "BUG"
     return f"BUG+EC (tol {row['conserve_tol']:.0e})"
@@ -35,7 +37,7 @@ def variant_key(row: dict[str, Any]) -> tuple[int, float]:
     Returns:
         A tuple usable as a sort key.
     """
-    return (int(row["conserve_energy"]), -row["conserve_tol"])
+    return (int(row.get("method", "bug") == "tdvp") + 2 * int(row["conserve_energy"]), -row["conserve_tol"])
 
 
 def parse_args() -> argparse.Namespace:
@@ -100,7 +102,14 @@ def main() -> None:
         print("\nRatios against uncorrected BUG (1.000 = inert):")
         for dt in sorted({key[0] for key in block}):
             rows_at_dt = sorted((row for key, row in block.items() if key[0] == dt), key=variant_key)
-            base = next((row for row in rows_at_dt if not row["conserve_energy"]), None)
+            base = next(
+                (
+                    row
+                    for row in rows_at_dt
+                    if not row["conserve_energy"] and row.get("method", "bug") == "bug"
+                ),
+                None,
+            )
             if base is None:
                 continue
             parts = []

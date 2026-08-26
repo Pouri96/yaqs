@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
-"""Table-II analogue comparing BUG with and without the energy correction.
+"""Table-II analogue comparing BUG, BUG with the energy correction, and 2-TDVP.
 
 Same two L=16 models, initial states, MPOs, truncation settings and exact
 references as the manuscript's matched-parameter benchmark; the fixtures are
 imported from that runner rather than restated, so nothing can drift between the
-two. The variants differ only in the correction:
+two.
 
-    bug          conserve_energy off
-    bug_ec_1e-12 conserve_energy on, the library default relative guard
-    bug_ec_1e-14 conserve_energy on, a tighter guard
+    bug          BUG, conserve_energy off
+    tdvp2        two-site TDVP, the manuscript's baseline
+    bug_ec_<tol> BUG with the correction armed at that relative guard
 
-Two guards are run because ``conserve_tol`` is relative to ``|o_0|``: at
-``|o_0| ~ 15`` the default 1e-12 gives a skip threshold of 1.5e-11, so the drift
-column reports the guard rather than the accuracy of the correction unless the
-guard is tightened. Running both shows which of the two is being measured.
+2-TDVP is an uncorrected baseline. It also compresses and therefore also loses
+``<H>``, which is what makes the comparison worth drawing; but it truncates at
+every local two-site split rather than in one global compression sweep, so it
+offers no single orthogonality centre left by a compression for the correction to
+act at. Applying the correction to it is not a configuration change.
+
+``conserve_tol`` is relative to ``|o_0|``, so where the truncation is mild enough
+for the guard to bind it is the guard, not the correction, that sets the restored
+value. Passing several tolerances separates the two regimes.
 
 Recorded per configuration: final infidelity (Eq. 34), phase-aligned error
 (Eq. 33), the energy-drift trace ``|<H>(t) - o_0|``, the norm-drift trace, the
@@ -53,6 +58,7 @@ from mqt.yaqs.core.methods import bug as bug_module  # noqa: E402
 from mqt.yaqs.core.methods.bug import bug  # noqa: E402
 from mqt.yaqs.core.methods.conservation import energy_expectation  # noqa: E402
 from mqt.yaqs.core.methods.tdvp import primitives  # noqa: E402
+from mqt.yaqs.core.methods.tdvp import tdvp as tdvp_evolve  # noqa: E402
 
 DEFAULT_TOLS = (1e-13,)
 
@@ -84,18 +90,30 @@ def parse_args() -> argparse.Namespace:
         default=",".join(str(tol) for tol in DEFAULT_TOLS),
         help="Comma-separated conserve_tol values to run the corrected variant at.",
     )
+    parser.add_argument("--no-tdvp", action="store_true", help="Skip the 2-TDVP baseline.")
     parser.add_argument("--output", type=Path, default=HERE / "l16_energy_comparison.json")
     return parser.parse_args()
 
 
-def build_variants(tols: list[float]) -> list[tuple[str, bool, float]]:
-    """Return the uncorrected variant followed by one corrected variant per tolerance.
+def build_variants(tols: list[float], *, with_tdvp: bool) -> list[tuple[str, str, bool, float]]:
+    """Return the baselines followed by one corrected BUG variant per tolerance.
+
+    2-TDVP enters as an uncorrected baseline only. It truncates at every local
+    two-site split rather than in one global compression sweep, so there is no
+    single orthogonality centre left by a compression for the correction to act
+    at; the no-error-reduction identity is stated for exactly that centre.
+
+    Args:
+        tols: Relative guards for the corrected variants.
+        with_tdvp: Whether to include the 2-TDVP baseline.
 
     Returns:
-        ``(label, conserve_energy, conserve_tol)`` triples.
+        ``(label, method, conserve_energy, conserve_tol)`` tuples.
     """
-    variants: list[tuple[str, bool, float]] = [("bug", False, tols[0])]
-    variants.extend((f"bug_ec_{tol:.0e}", True, tol) for tol in tols)
+    variants: list[tuple[str, str, bool, float]] = [("bug", "bug", False, tols[0])]
+    if with_tdvp:
+        variants.append(("tdvp2", "tdvp", False, tols[0]))
+    variants.extend((f"bug_ec_{tol:.0e}", "bug", True, tol) for tol in tols)
     return variants
 
 
@@ -119,6 +137,7 @@ def step_parameters(dt: float, *, conserve: bool, tol: float, max_bond: int) -> 
         trunc_mode="relative_discarded_weight",
         svd_threshold=_runner.THRESHOLD,
         krylov_tol=_runner.KRYLOV_TOL,
+        tdvp_mode="2site",
         get_state=True,
         conserve_energy=conserve,
         conserve_tol=tol,
@@ -161,6 +180,7 @@ def evolve(
     *,
     dt: float,
     steps: int,
+    method: str,
     conserve: bool,
     tol: float,
     trace_every: int,
@@ -173,6 +193,7 @@ def evolve(
         mpo: Hamiltonian MPO.
         dt: Full physical timestep.
         steps: Number of physical steps.
+        method: ``bug`` or ``tdvp``.
         conserve: Whether to arm the energy correction.
         tol: Relative guard of the correction.
         trace_every: Sampling stride for the traces.
@@ -198,7 +219,10 @@ def evolve(
     with FiringCounter() as counter:
         for step in range(steps):
             start = time.perf_counter()
-            bug(state, local_mpo, params, energy_target=target if conserve else None)
+            if method == "tdvp":
+                tdvp_evolve(state, local_mpo, params)
+            else:
+                bug(state, local_mpo, params, energy_target=target if conserve else None)
             wall += time.perf_counter() - start
             if (step + 1) % trace_every == 0 or step == steps - 1:
                 times.append((step + 1) * dt)
@@ -225,7 +249,10 @@ def main() -> None:
     args = parse_args()
     models = [item.strip() for item in args.models.split(",") if item.strip()]
     dts = [float(item) for item in args.dts.split(",") if item.strip()]
-    variants = build_variants([float(item) for item in args.tols.split(",") if item.strip()])
+    variants = build_variants(
+        [float(item) for item in args.tols.split(",") if item.strip()],
+        with_tdvp=not args.no_tdvp,
+    )
 
     # One shared matrix-free adaptive Lanczos for every local exponential, as in
     # the manuscript runner.
@@ -244,12 +271,13 @@ def main() -> None:
 
         for dt in dts:
             steps = int(round(args.total_time / dt))
-            for name, conserve, tol in variants:
+            for name, method, conserve, tol in variants:
                 result = evolve(
                     initial,
                     mpo,
                     dt=dt,
                     steps=steps,
+                    method=method,
                     conserve=conserve,
                     tol=tol,
                     trace_every=args.trace_every,
@@ -261,6 +289,7 @@ def main() -> None:
                     "dt": dt,
                     "steps": steps,
                     "variant": name,
+                    "method": method,
                     "conserve_energy": conserve,
                     "conserve_tol": tol,
                     "max_bond_dim": args.max_bond,
