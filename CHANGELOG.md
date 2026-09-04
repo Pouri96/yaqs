@@ -14,9 +14,11 @@ releases may include breaking changes.
 
 <!-- TODO: add the pull request reference to the entry below once the PR is opened. -->
 
-- added an opt-in post-compression energy correction for BUG (`conserve_energy`,
-  `conserve_tol`), restoring `<H>` to its initial value after each compression
-  sweep without changing any bond dimension ([**@Pouri96**])
+- added an opt-in post-compression correction that restores conserved quantities
+  for BUG and TDVP (`conserve_energy`, `conserve_observables`, `conserve_joint`,
+  `conserve_tol`), restoring `<H>` and any Hermitian observables commuting with
+  the Hamiltonian to their initial values without changing any bond dimension,
+  solved together when more than one is configured ([**@Pouri96**])
 - added infrastructure for analog-digital simulation ([#525])
   ([**@linusschulte**])
 - added native support for gates acting on three or more qubits in circuit

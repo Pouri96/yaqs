@@ -187,6 +187,10 @@ known-first-party = ["mqt.yaqs"]
 "docs/**" = ["T20", "INP001"]
 "scripts" = ["T20", "INP001"]
 "noxfile.py" = ["T20", "TID251"]
+# Benchmark scripts are command-line tools whose output IS the deliverable, so `print` is
+# not a leftover debug statement here. Without this, `fix = true` silently deletes the
+# reporting body of every script under paper/.
+"paper/**" = ["T20", "INP001"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

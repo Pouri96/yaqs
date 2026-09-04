@@ -34,6 +34,29 @@ creates them locally in the corresponding benchmark directory.
 - `l16_tradeoff_caps_2026-08-12/build_workbook.mjs` creates the optional
   workbook export.
 
+The `spin_conservation/` directory belongs to the separate structure-preserving
+compression manuscript rather than to the BUG-MPS one:
+
+- `spin_conservation/fixtures_n.py` rebuilds the models, observables, and
+  initial states with the chain length as an argument, adding the isotropic
+  Heisenberg chain and the total-spin operators.
+- `spin_conservation/check_fixtures.py` checks those rebuilds against the
+  independent sparse assembly and against the BUG-MPS manuscript's own
+  operators.
+- `spin_conservation/l16_joint_table.py` runs the sixteen-site joint-restoration
+  arms behind the manuscript's tables. `--sweep` selects where the correction
+  acts: `none` at the one centre the compression leaves, `k2` at two centres,
+  `full` at every centre in turn.
+- `spin_conservation/l16_trajectory.py` records the same quench resolved in
+  time.
+- `spin_conservation/plot_trajectory.py` draws the invariant-drift figure into
+  `paper/spc_mps/figures/`.
+- `spin_conservation/dt_scaling.py` runs the six-site step-size sweep that
+  separates the flow's drift from the compression's.
+- `spin_conservation/gram_conditioning.py` records the covariance Jacobian's
+  condition number and the residual the joint solve leaves, at every solve of
+  the sixteen-site run, which is what identifies the plateau in the figure.
+
 ## Reproduction
 
 Create the YAQS environment from the repository root:
@@ -65,6 +88,25 @@ and regenerate the figure:
 uv run python paper/bug-mps-benchmarks/l16_tradeoff_caps_2026-08-12/run_experiments.py --stage all
 uv run python paper/bug-mps-benchmarks/l16_tradeoff_caps_2026-08-12/validate_and_export.py
 uv run --with matplotlib python paper/bug-mps-benchmarks/l16_tradeoff_caps_2026-08-12/make_figure.py
+```
+
+Reproduce the structure-preserving compression manuscript's table, figure,
+step-size sweep, and conditioning measurement:
+
+```bash
+uv run python paper/bug-mps-benchmarks/spin_conservation/check_fixtures.py
+uv run python paper/bug-mps-benchmarks/spin_conservation/l16_joint_table.py \
+  --models xxx --caps 32 --variants none,joint4,joint5,jointS2 --output paper/bug-mps-benchmarks/spin_conservation/l16_allinv.json
+uv run python paper/bug-mps-benchmarks/spin_conservation/l16_joint_table.py \
+  --models xxx --caps 32 --variants none,joint4 --integrator tdvp --output paper/bug-mps-benchmarks/spin_conservation/l16_allinv.json
+uv run python paper/bug-mps-benchmarks/spin_conservation/l16_joint_table.py \
+  --models xxx --caps 32 --variants jointS2,joint5 --output paper/bug-mps-benchmarks/spin_conservation/l16_allinv.json
+uv run python paper/bug-mps-benchmarks/spin_conservation/l16_joint_table.py \
+  --models xxx --caps 32 --variants joint4,jointS2,joint5 --sweep full --output paper/bug-mps-benchmarks/spin_conservation/l16_allinv.json
+uv run python paper/bug-mps-benchmarks/spin_conservation/l16_trajectory.py
+uv run --with matplotlib python paper/bug-mps-benchmarks/spin_conservation/plot_trajectory.py
+uv run python paper/bug-mps-benchmarks/spin_conservation/dt_scaling.py
+uv run python paper/bug-mps-benchmarks/spin_conservation/gram_conditioning.py
 ```
 
 All runners expose smaller selectable grids through `--help`. The benchmark

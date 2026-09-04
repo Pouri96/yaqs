@@ -29,6 +29,8 @@ from mqt.yaqs.core.linalg.svd_utils import TruncMode  # ruff: ignore[typing-only
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
+    from mqt.yaqs.core.data_structures.mpo import MPO
+
 SimulationPreset = Literal["fast", "balanced", "accurate", "exact"]
 GateMode = Literal["tdvp", "full-tdvp", "swaps", "mpo"]
 TDVPMode = Literal["1site", "2site", "dynamic"]
@@ -276,10 +278,10 @@ def _validate_svd_threshold(svd_threshold: float) -> float:
 
 
 def _validate_conserve_tol(conserve_tol: float) -> float:
-    """Validate the relative tolerance of the post-compression energy correction.
+    """Validate the relative tolerance of the conservation corrections.
 
     Args:
-        conserve_tol: Relative threshold below which the correction is skipped.
+        conserve_tol: Relative tolerance below which the correction is skipped.
 
     Returns:
         The validated tolerance as a float.
@@ -534,9 +536,13 @@ class AnalogSimParams(_ObservableOrderingMixin):
             Default is ``1``.
         tdvp_mode: TDVP integrator geometry (``"1site"``, ``"2site"``, or ``"dynamic"``).
             Default is ``"2site"``.
-        conserve_energy: If ``True``, restore ``<H>`` to its initial value after each BUG
-            compression sweep. Off by default; when off the evolution is unchanged.
-        conserve_tol: Relative threshold below which the energy correction is skipped.
+        conserve_energy: If ``True``, restore ``<H>`` to its initial value after each
+            compression. Off by default.
+        conserve_observables: Additional conserved quantities to restore, as ``{name: mpo}``
+            with Hermitian MPOs commuting with the Hamiltonian. Empty by default.
+        conserve_joint: If ``True`` (default), solve for all configured conserved
+            quantities simultaneously rather than one at a time.
+        conserve_tol: Relative tolerance of the conservation corrections.
     """
 
     def __init__(
@@ -560,6 +566,8 @@ class AnalogSimParams(_ObservableOrderingMixin):
         tdvp_sweeps: int = 1,
         tdvp_mode: TDVPMode = "2site",
         conserve_energy: bool = False,
+        conserve_observables: dict[str, MPO] | None = None,
+        conserve_joint: bool = True,
         conserve_tol: float = 1e-13,
     ) -> None:
         """Physics simulation parameters initialization.
@@ -600,17 +608,33 @@ class AnalogSimParams(_ObservableOrderingMixin):
             tdvp_mode: TDVP integrator geometry (``"1site"``, ``"2site"``, or ``"dynamic"``).
                 Default is ``"2site"``.
             conserve_energy: If ``True``, restore ``<H>`` to its initial value after each
-                BUG compression sweep, by a rank-preserving displacement of the
-                orthogonality center. Applies to ``EvolutionMode.BUG`` only and presumes a
-                time-independent Hermitian Hamiltonian and no noise model. Off by default;
-                when off the evolution is unchanged.
-            conserve_tol: Relative threshold below which the energy correction is skipped,
-                measured as ``|<H> - target| < conserve_tol * max(1, |target|)``. A step
-                that discards no weight is therefore left bit-identical. The default is
-                the tightest value that keeps that property on short chains, where the
-                local solver's residual is largest relative to the guard; tightening it
-                further improves the restored value only while the truncation is mild,
-                and costs the bit-identical uncompressed step.
+                compression. Works with both ``EvolutionMode.TDVP`` and
+                ``EvolutionMode.BUG``, and requires a time-independent Hermitian
+                Hamiltonian and no noise model. Bond dimensions are unchanged. Off by
+                default.
+            conserve_observables: Additional conserved quantities to restore alongside the
+                energy, as ``{name: mpo}`` with each value a Hermitian MPO that commutes
+                with the Hamiltonian (for example the total magnetization of a spin
+                chain). Each is restored to its initial expectation value after every
+                compression, under the same requirements as ``conserve_energy``. With two
+                or more quantities configured (counting the energy), their corrections are
+                solved together, since correcting them one at a time perturbs the ones
+                already corrected. ``None`` (default) restores nothing beyond
+                ``conserve_energy``. Only the energy and sums of on-site operators, which
+                covers the abelian charges, are invariants of the low-rank dynamics; a
+                quantity such as the total spin of an SU(2)-symmetric chain drifts before
+                any weight is discarded, and restoring it pins a value the dynamics does
+                not maintain.
+            conserve_joint: If ``True`` (default), solve for all configured conserved
+                quantities simultaneously. ``False`` applies one scalar correction per
+                quantity in order, where each correction perturbs the previous ones;
+                this exists for comparison, not for production use. Ignored with fewer
+                than two quantities.
+            conserve_tol: Relative tolerance of the conservation corrections. A correction
+                is skipped while its quantity is within ``conserve_tol * max(1, |target|)``
+                of the target, so a step that truncates nothing is left unchanged. Larger
+                values skip more often and leave more drift. Ignored when nothing is
+                conserved.
         """
         _validate_random_seed(random_seed)
         preset_values = SIMULATION_PRESETS[_validate_preset(preset)]
@@ -648,6 +672,8 @@ class AnalogSimParams(_ObservableOrderingMixin):
         self.tdvp_sweeps = _validate_tdvp_sweeps(tdvp_sweeps)
         self.tdvp_mode = _validate_tdvp_mode(tdvp_mode)
         self.conserve_energy = conserve_energy
+        self.conserve_observables: dict[str, MPO] = dict(conserve_observables) if conserve_observables else {}
+        self.conserve_joint = conserve_joint
         self.conserve_tol = _validate_conserve_tol(conserve_tol)
 
 
@@ -700,9 +726,6 @@ class DigitalSimParams(_ObservableOrderingMixin):
         tdvp_sweeps: Number of symmetric TDVP substeps per gate. Default is ``1``.
         tdvp_mode: TDVP integrator geometry (``"1site"``, ``"2site"``, or ``"dynamic"``).
             Default is ``"2site"``.
-        conserve_energy: If ``True``, restore ``<H>`` to its initial value after each BUG
-            compression sweep. Off by default; when off the evolution is unchanged.
-        conserve_tol: Relative threshold below which the energy correction is skipped.
     """
 
     dt = 1
@@ -725,8 +748,6 @@ class DigitalSimParams(_ObservableOrderingMixin):
         gate_mode: GateMode = "mpo",
         tdvp_sweeps: int = 1,
         tdvp_mode: TDVPMode = "2site",
-        conserve_energy: bool = False,
-        conserve_tol: float = 1e-13,
     ) -> None:
         """Initialize digital circuit simulation parameters.
 
@@ -757,14 +778,6 @@ class DigitalSimParams(_ObservableOrderingMixin):
             gate_mode: Gate update mode (default ``"mpo"``).
             tdvp_sweeps: Number of symmetric TDVP substeps per gate (default ``1``).
             tdvp_mode: TDVP integrator geometry (default ``"2site"``).
-            conserve_energy: If ``True``, restore ``<H>`` to its initial value after each
-                BUG compression sweep, by a rank-preserving displacement of the
-                orthogonality center. Applies to ``EvolutionMode.BUG`` only and presumes a
-                time-independent Hermitian Hamiltonian. Off by default; when off the
-                evolution is unchanged.
-            conserve_tol: Relative threshold below which the energy correction is skipped,
-                measured as ``|<H> - target| < conserve_tol * max(1, |target|)``. A step
-                that discards no weight is therefore left bit-identical.
 
         Raises:
             ValueError: If ``shots`` is not a positive integer when provided.
@@ -799,5 +812,3 @@ class DigitalSimParams(_ObservableOrderingMixin):
         self.gate_mode = _validate_gate_mode(gate_mode)
         self.tdvp_sweeps = _validate_tdvp_sweeps(tdvp_sweeps)
         self.tdvp_mode = _validate_tdvp_mode(tdvp_mode)
-        self.conserve_energy = conserve_energy
-        self.conserve_tol = _validate_conserve_tol(conserve_tol)

@@ -21,8 +21,13 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ..core.data_structures.simulation_parameters import EvolutionMode
-from ..core.methods.conservation import energy_expectation, validate_energy_conservation
+from ..core.methods.conservation import (
+    ConservationTargets,
+    EnergyTarget,
+    expectation_value,
+    record_conservation_targets,
+    validate_conservation,
+)
 from ..core.methods.dissipation import apply_dissipation
 from ..core.methods.scheduled_jumps import apply_scheduled_jumps, has_scheduled_jump
 from ..core.methods.stochastic_process import stochastic_process
@@ -38,14 +43,13 @@ if TYPE_CHECKING:
     from ..core.data_structures.simulation_parameters import AnalogSimParams
 
 
-def capture_energy_target(
+def capture_conservation_target(
     state: MPS, hamiltonian: MPO, noise_model: NoiseModel | None, sim_params: AnalogSimParams
-) -> float | None:
-    """Record the value the post-compression energy correction restores.
+) -> EnergyTarget | ConservationTargets | None:
+    """Build the conservation correction settings for one trajectory.
 
-    Called once per trajectory, before the step loop, on the state that is actually
-    evolved. That state is already padded, so the recorded value is the invariant of
-    the flow the run integrates.
+    Called once before the step loop, on the state that is actually evolved, so the
+    recorded expectation values are taken after any padding of the initial MPS.
 
     Args:
         state: Initial MPS of the trajectory.
@@ -54,22 +58,21 @@ def capture_energy_target(
         sim_params: Analog simulation parameters.
 
     Returns:
-        The normalized initial ``<H>``, or ``None`` when the correction is off.
-
-    Raises:
-        ValueError: If ``conserve_energy`` is set for an evolution mode other than BUG.
+        ``None`` when nothing is conserved. With ``conserve_energy`` alone, the initial
+        ``<H>`` with ``sim_params.conserve_tol`` as an :class:`EnergyTarget` -- the
+        energy-only path is unchanged by the multi-observable feature. With
+        ``conserve_observables`` configured, a :class:`ConservationTargets` holding the
+        energy first (when ``conserve_energy`` is set) and then each named observable.
     """
-    validate_energy_conservation(sim_params, has_noise=noise_model is not None)
-    if not sim_params.conserve_energy:
+    validate_conservation(sim_params, has_noise=noise_model is not None)
+    extra = sim_params.conserve_observables
+    if not sim_params.conserve_energy and not extra:
         return None
-    if sim_params.evolution_mode != EvolutionMode.BUG:
-        msg = (
-            f"conserve_energy=True requires evolution_mode=EvolutionMode.BUG, got "
-            f"{sim_params.evolution_mode!r}. The correction is attached to the BUG "
-            "compression sweep and has no effect on other evolution modes."
-        )
-        raise ValueError(msg)
-    return energy_expectation(state, hamiltonian)
+    if not extra:
+        return EnergyTarget(expectation_value(state, hamiltonian), sim_params.conserve_tol)
+    names = (["H"] if sim_params.conserve_energy else []) + list(extra.keys())
+    mpos = ([hamiltonian] if sim_params.conserve_energy else []) + list(extra.values())
+    return record_conservation_targets(state, names, mpos, tol=sim_params.conserve_tol, joint=sim_params.conserve_joint)
 
 
 def initialize(
@@ -104,7 +107,7 @@ def step_through(
     sim_params: AnalogSimParams,
     current_time: float,
     rng: np.random.Generator | None = None,
-    energy_target: float | None = None,
+    conservation_target: EnergyTarget | ConservationTargets | None = None,
 ) -> MPS:
     """Perform a single time step evolution of the system state using the TJM.
 
@@ -118,13 +121,13 @@ def step_through(
         sim_params (AnalogSimParams): Simulation parameters including the time step and measurement settings.
         current_time (float): The current simulation time.
         rng: The random number generator to use.
-        energy_target: Normalized initial ``<H>`` handed down to the BUG energy correction,
-            or ``None`` when the correction is off.
+        conservation_target: Conservation correction settings, or ``None`` when nothing
+            is off.
 
     Returns:
         MPS: The updated state after one time step evolution.
     """
-    apply_unitary_evolution(state, hamiltonian, sim_params, energy_target=energy_target)
+    apply_unitary_evolution(state, hamiltonian, sim_params, conservation_target=conservation_target)
     apply_dissipation(state, noise_model, sim_params.dt, sim_params)
 
     if has_scheduled_jump(noise_model, current_time, sim_params.dt):
@@ -141,7 +144,7 @@ def sample(
     j: int,
     rng: np.random.Generator | None = None,
     diagnostics: NDArray[np.float64] | None = None,
-    energy_target: float | None = None,
+    conservation_target: EnergyTarget | ConservationTargets | None = None,
 ) -> MPS | None:
     """Sample the quantum state and record observable measurements from the sampling MPS.
 
@@ -160,14 +163,14 @@ def sample(
             trajectory RNG used for ``initialize`` / ``step_through`` so intermediate
             sampling does not alter subsequent evolution.
         diagnostics: Optional ``(3, T)`` buffer for runtime cost, max bond, and total bond.
-        energy_target: Normalized initial ``<H>`` handed down to the BUG energy correction,
-            or ``None`` when the correction is off.
+        conservation_target: Conservation correction settings, or ``None`` when nothing
+            is off.
 
     Returns:
         The evolved MPS when this is the final time step and ``get_state=True``, else ``None``.
     """
     psi = copy.deepcopy(phi)
-    apply_unitary_evolution(psi, hamiltonian, sim_params, energy_target=energy_target)
+    apply_unitary_evolution(psi, hamiltonian, sim_params, conservation_target=conservation_target)
     apply_dissipation(psi, noise_model, sim_params.dt / 2, sim_params)
 
     current_time = sim_params.times[j]
@@ -263,7 +266,7 @@ def analog_tjm_2(
         results = np.zeros((len(sim_params.sorted_observables), 1))
 
     final_state: MPS | None = None
-    energy_target = capture_energy_target(state, hamiltonian, noise_model, sim_params)
+    conservation_target = capture_conservation_target(state, hamiltonian, noise_model, sim_params)
 
     # Zero-duration runs: evaluate the initial state before any noise/evolution (F0).
     if n_times == 1:
@@ -289,7 +292,7 @@ def analog_tjm_2(
                 j=0,
                 rng=measurement_rng(0),
                 diagnostics=diagnostics,
-                energy_target=energy_target,
+                conservation_target=conservation_target,
             )
         for j, _ in enumerate(sim_params.times[1:], start=1):
             phi = step_through(
@@ -299,7 +302,7 @@ def analog_tjm_2(
                 sim_params,
                 sim_params.times[j],
                 rng=rng,
-                energy_target=energy_target,
+                conservation_target=conservation_target,
             )
             if sim_params.sample_timesteps or j == n_times - 1:
                 sampled_state = sample(
@@ -311,7 +314,7 @@ def analog_tjm_2(
                     j,
                     rng=measurement_rng(j),
                     diagnostics=diagnostics,
-                    energy_target=energy_target,
+                    conservation_target=conservation_target,
                 )
                 if sampled_state is not None:
                     final_state = sampled_state
@@ -334,7 +337,7 @@ def analog_tjm_2(
                 j=1,
                 rng=measurement_rng(1),
                 diagnostics=diagnostics,
-                energy_target=energy_target,
+                conservation_target=conservation_target,
             )
             if sampled_state is not None:
                 final_state = sampled_state
@@ -347,7 +350,7 @@ def analog_tjm_2(
                 sim_params,
                 sim_params.times[j],
                 rng=rng,
-                energy_target=energy_target,
+                conservation_target=conservation_target,
             )
             if sim_params.sample_timesteps or j == n_times - 1:
                 sampled_state = sample(
@@ -359,7 +362,7 @@ def analog_tjm_2(
                     j,
                     rng=measurement_rng(j),
                     diagnostics=diagnostics,
-                    energy_target=energy_target,
+                    conservation_target=conservation_target,
                 )
                 if sampled_state is not None:
                     final_state = sampled_state
@@ -415,14 +418,14 @@ def analog_tjm_1(
     if noise_model is not None and has_scheduled_jump(noise_model, sim_params.times[0], sim_params.dt):
         state = apply_scheduled_jumps(state, noise_model, sim_params.times[0], sim_params)
 
-    energy_target = capture_energy_target(state, hamiltonian, noise_model, sim_params)
+    conservation_target = capture_conservation_target(state, hamiltonian, noise_model, sim_params)
 
     if sim_params.sample_timesteps:
         state.record_diagnostics(diagnostics, 0)
         state.evaluate_observables(sim_params, results, 0)
 
     for j, _ in enumerate(sim_params.times[1:], start=1):
-        apply_unitary_evolution(state, hamiltonian, sim_params, energy_target=energy_target)
+        apply_unitary_evolution(state, hamiltonian, sim_params, conservation_target=conservation_target)
         if noise_model is not None:
             apply_dissipation(state, noise_model, sim_params.dt, sim_params)
             current_time = sim_params.times[j]

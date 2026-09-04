@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
-from .conservation import restore_energy_at_center
+from .conservation import ConservationTargets, apply_conservation
 from .decompositions import left_qr, right_qr
 from .tdvp.primitives import update_left_environment, update_right_environment, update_site
 from .tdvp.sweep_utils import get_min_keep
@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from ..data_structures.mpo import MPO
     from ..data_structures.mps import MPS
     from ..data_structures.simulation_parameters import AnalogSimParams, DigitalSimParams
+    from .conservation import EnergyTarget
 
 
 class BUGCheckpoint(Protocol):
@@ -228,31 +229,29 @@ def _postprocess_bug_state(
     sim_params: AnalogSimParams | DigitalSimParams,
     *,
     normalize: bool = True,
-    energy_target: float | None = None,
+    conservation_target: EnergyTarget | ConservationTargets | None = None,
 ) -> bool:
-    """Apply SVD compression, the optional energy correction, and renormalization.
+    """Apply SVD compression, the optional conservation correction, and renormalization.
 
-    The compression discards weight and with it a portion of ``<H>``. When
-    ``sim_params.conserve_energy`` is set and a target is supplied, the energy is
-    restored between the compression and the renormalization, at the orthogonality
-    center the compression sweep leaves. The Rayleigh quotient is scale invariant,
-    so the rescale afterwards keeps the restored value.
+    The compression discards weight and with it a portion of every conserved quantity.
+    When a target is given, those quantities are restored between the compression and the
+    renormalization, at the orthogonality center the compression leaves. Restoring them
+    there costs no bond dimension and survives the rescale that follows.
 
     Args:
         state: MPS to compress (and optionally normalize) in place.
         mpo: Hamiltonian as an MPO in the same frame as ``state``. Used only by the
-            energy correction; the reflected half-sweep must pass the reflected MPO.
+            conservation correction; the reflected half-sweep must pass the reflected MPO.
         sim_params: Simulation parameters supplying ``svd_threshold``,
-            ``max_bond_dim``, and ``trunc_mode`` for compression, and
-            ``conserve_energy``/``conserve_tol`` for the correction.
+            ``max_bond_dim``, and ``trunc_mode`` for compression.
         normalize: If ``True`` (default), rescale the canonical center tensor
             after compression. If ``False``, leave the post-compression norm
             unchanged (used for auxiliary correlator states).
-        energy_target: Normalized ``<H>`` of the initial state. ``None`` disables the
-            correction regardless of ``sim_params.conserve_energy``.
+        conservation_target: Conservation correction settings, or ``None`` to leave the compression
+            uncorrected.
 
     Returns:
-        Whether the energy correction displaced the center tensor.
+        Whether the correction displaced the center tensor.
     """
     # ``bug_sweep`` already leaves a right-canonical MPS rooted at site 0.
     # Compress directly from that gauge and retain the opposite endpoint as the
@@ -266,8 +265,8 @@ def _postprocess_bug_state(
         restore_center=False,
     )
     corrected = False
-    if sim_params.conserve_energy and energy_target is not None:
-        corrected = restore_energy_at_center(state, mpo, energy_target, tol=sim_params.conserve_tol)
+    if conservation_target is not None:
+        corrected = apply_conservation(state, mpo, conservation_target)
     if normalize:
         _normalize_center_tensor(state)
     return corrected
@@ -280,7 +279,7 @@ def bug(
     *,
     normalize: bool = True,
     checkpoint: BUGCheckpoint | None = None,
-    energy_target: float | None = None,
+    conservation_target: EnergyTarget | ConservationTargets | None = None,
 ) -> None:
     """Perform one BUG physical step according to ``sim_params``.
 
@@ -298,10 +297,10 @@ def bug(
         checkpoint: Optional diagnostic callback invoked after each half-sweep
             and its compression. The callback receives a stage name and whether
             the network is currently reflected.
-        energy_target: Normalized ``<H>`` of the initial state, restored after each
-            of the two compressions when ``sim_params.conserve_energy`` is set. A
-            scalar is frame-independent, so the same value serves the reflected
-            half-sweep. ``None`` (default) leaves the step uncorrected.
+        conservation_target: Conservation correction settings, applied after each of the two
+            compressions. The same target serves the reflected half-sweep, since
+            ``<H>`` does not depend on the frame. ``None`` (default) leaves the
+            step uncorrected.
 
     Raises:
         ValueError: If lengths differ or the gauge contract fails.
@@ -315,7 +314,7 @@ def bug(
     bug_sweep(state, mpo, dt=half_dt, krylov_tol=sim_params.krylov_tol)
     if checkpoint is not None:
         checkpoint("first_half_sweep", state, reflected=False)
-    _postprocess_bug_state(state, mpo, sim_params, normalize=normalize, energy_target=energy_target)
+    _postprocess_bug_state(state, mpo, sim_params, normalize=normalize, conservation_target=conservation_target)
     if checkpoint is not None:
         checkpoint("first_compression", state, reflected=False)
 
@@ -325,10 +324,19 @@ def bug(
         flipped = True
         state.assert_center(0, context="bug reflected half-sweep entry")
         reflected_mpo = mpo.reflected()
+        # An EnergyTarget names no observable and rides on ``reflected_mpo``; a
+        # ConservationTargets carries its own, which must be reflected with the frame.
+        reflected_target = (
+            conservation_target.reflected()
+            if isinstance(conservation_target, ConservationTargets)
+            else conservation_target
+        )
         bug_sweep(state, reflected_mpo, dt=half_dt, krylov_tol=sim_params.krylov_tol)
         if checkpoint is not None:
             checkpoint("second_half_sweep", state, reflected=True)
-        _postprocess_bug_state(state, reflected_mpo, sim_params, normalize=normalize, energy_target=energy_target)
+        _postprocess_bug_state(
+            state, reflected_mpo, sim_params, normalize=normalize, conservation_target=reflected_target
+        )
         if checkpoint is not None:
             checkpoint("second_compression", state, reflected=True)
     finally:

@@ -123,7 +123,7 @@ def test_step_through() -> None:
         patch("mqt.yaqs.analog.analog_tjm.stochastic_process") as mock_stochastic_process,
     ):
         step_through(state, H, noise_model, sim_params, current_time=0.2)
-        mock_unitary.assert_called_once_with(state, H, sim_params, energy_target=None)
+        mock_unitary.assert_called_once_with(state, H, sim_params, conservation_target=None)
         mock_dissipation.assert_called_once_with(state, noise_model, sim_params.dt, sim_params)
         mock_stochastic_process.assert_called_once_with(state, noise_model, sim_params.dt, sim_params, rng=None)
 
@@ -388,9 +388,9 @@ def test_analog_tjm_1_dispatches_bug(monkeypatch: pytest.MonkeyPatch) -> None:
         _sim_params: AnalogSimParams,
         *,
         normalize: bool = True,
-        energy_target: float | None = None,
+        conservation_target: float | None = None,
     ) -> None:
-        del normalize, energy_target
+        del normalize, conservation_target
         calls["bug"] += 1
         state.set_center(0)
 

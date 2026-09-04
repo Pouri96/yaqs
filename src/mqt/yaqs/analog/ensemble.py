@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .analog_tjm import capture_energy_target
+from .analog_tjm import capture_conservation_target
 from .evolution import apply_unitary_evolution
 
 if TYPE_CHECKING:
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..core.data_structures.mpo import MPO
     from ..core.data_structures.mps import MPS
     from ..core.data_structures.simulation_parameters import AnalogSimParams
+    from ..core.methods.conservation import ConservationTargets, EnergyTarget
 
 
 def _unitary_step(
@@ -31,7 +32,7 @@ def _unitary_step(
     sim_params: AnalogSimParams,
     *,
     normalize: bool = True,
-    energy_target: float | None = None,
+    conservation_target: EnergyTarget | ConservationTargets | None = None,
 ) -> None:
     """Advance one unitary time step according to ``sim_params.evolution_mode`` (TDVP or BUG).
 
@@ -41,10 +42,12 @@ def _unitary_step(
         sim_params (AnalogSimParams): Analog simulation parameters (time step, bond limits, etc.).
         normalize: Forwarded to BUG post-processing; keep ``True`` for physical states and
             ``False`` for auxiliary correlator states with non-unitary probe amplitudes.
-        energy_target: Normalized initial ``<H>`` handed to the BUG energy correction, or
-            ``None`` when the correction is off.
+        conservation_target: Conservation correction settings, or ``None`` when nothing
+            is off.
     """
-    apply_unitary_evolution(state, hamiltonian, sim_params, normalize=normalize, energy_target=energy_target)
+    apply_unitary_evolution(
+        state, hamiltonian, sim_params, normalize=normalize, conservation_target=conservation_target
+    )
 
 
 def _step_correlator_phis(
@@ -61,8 +64,8 @@ def _step_correlator_phis(
     """
     for phi in phis:
         # Preserve non-unitary probe amplitudes under BUG (TDVP ignores normalize).
-        # No energy target: ``B|psi>`` is a probe state, and its energy is not the
-        # invariant recorded for the primary state.
+        # No conservation target: ``B|psi>`` is a probe state, and its expectation values
+        # are not the invariants recorded for the primary state.
         _unitary_step(phi, hamiltonian, sim_params, normalize=False)
 
 
@@ -91,7 +94,7 @@ def ensemble_member_worker(
     """
     _idx, initial_state, sim_params, hamiltonian = args
     state = copy.deepcopy(initial_state)
-    energy_target = capture_energy_target(state, hamiltonian, None, sim_params)
+    conservation_target = capture_conservation_target(state, hamiltonian, None, sim_params)
     last_index = len(sim_params.times) - 1
     pairs = sim_params.multi_time_observables
     n_pairs = len(pairs)
@@ -132,7 +135,7 @@ def ensemble_member_worker(
                 multi_time_results[p, 0] = phis[p].mixed_expectation(state, probe_a)
 
     for j, _ in enumerate(sim_params.times[1:], start=1):
-        _unitary_step(state, hamiltonian, sim_params, energy_target=energy_target)
+        _unitary_step(state, hamiltonian, sim_params, conservation_target=conservation_target)
         _step_correlator_phis(sim_params, hamiltonian, phis)
 
         if sim_params.sample_timesteps:

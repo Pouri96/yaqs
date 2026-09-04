@@ -214,6 +214,96 @@ Pass the resulting object to {meth}`~mqt.yaqs.Simulator.run` together with a
 {class}`~mqt.yaqs.State` and {class}`~mqt.yaqs.Hamiltonian` (see
 {doc}`analog_simulation`).
 
+### Conserving quantities under truncation
+
+Every truncation discards weight, and with it part of the energy and of any
+other conserved quantity of the dynamics. Set `conserve_energy=True` to restore
+`<H>` to its initial value after each compression. The correction displaces only
+the orthogonality center, so no bond dimension changes.
+
+Other conserved quantities are named in `conserve_observables` as
+`{label: mpo}`, where each MPO is Hermitian and commutes with the Hamiltonian.
+Two or more quantities, counting the energy, are solved for together, because
+correcting one at a time perturbs the ones already corrected.
+
+The example below evolves a Néel state under an XXZ chain, which conserves both
+the energy and the total magnetization, at a bond cap tight enough that the
+truncation moves both:
+
+```{code-cell} ipython3
+from mqt.yaqs import MPO, EvolutionMode, Hamiltonian, Simulator, State
+from mqt.yaqs.core.methods.conservation import expectation_value
+
+L = 10
+hamiltonian = Hamiltonian.heisenberg(L, Jx=1.0, Jy=1.0, Jz=0.5)
+
+magnetization = MPO()
+magnetization.from_pauli_sum(terms=[(0.5, f"Z{site}") for site in range(L)], length=L)
+
+initial = State(L, initial="Neel")
+energy_target = expectation_value(initial.mps, hamiltonian.mpo)
+magnetization_target = expectation_value(initial.mps, magnetization)
+
+sim = Simulator(show_progress=False)
+
+
+def _drift(**conservation: object) -> dict[str, str]:
+    """Evolve to t=2 at a bond cap of 4 and report how far each invariant moved."""
+    params = AnalogSimParams(
+        observables=[Observable("z", 0)],
+        elapsed_time=2.0,
+        dt=0.1,
+        evolution_mode=EvolutionMode.BUG,
+        max_bond_dim=4,
+        get_state=True,
+        **conservation,
+    )
+    final = sim.run(State(L, initial="Neel"), hamiltonian, params).output_state.mps
+    return {
+        "<H> drift": f"{expectation_value(final, hamiltonian.mpo) - energy_target:+.2e}",
+        "<M> drift": f"{expectation_value(final, magnetization) - magnetization_target:+.2e}",
+    }
+
+
+{
+    "uncorrected": _drift(),
+    "energy only": _drift(conserve_energy=True),
+    "magnetization only": _drift(conserve_observables={"M": magnetization}),
+    "both": _drift(conserve_energy=True, conserve_observables={"M": magnetization}),
+}
+```
+
+Note in the output that the `"energy only"` row leaves the magnetization drift
+slightly larger than the uncorrected run: a correction for one quantity moves
+every other one. This is why quantities are solved for together rather than one
+after another, and why you should list every invariant you care about in the
+same run.
+
+`conserve_tol` sets the relative tolerance: a quantity is left alone while it is
+within `conserve_tol * max(1, |target|)` of its target, so a step that truncates
+nothing is left unchanged. The default of `1e-13` is close to the round-off of
+the expectation value itself.
+
+Both `EvolutionMode.BUG` and `EvolutionMode.TDVP` are supported. The corrections
+require a time-independent Hermitian Hamiltonian and no noise model: no
+expectation value is conserved along a noisy trajectory, so there is no initial
+value to restore, and {meth}`~mqt.yaqs.Simulator.run` raises `ValueError` if you
+pass a {class}`~mqt.yaqs.NoiseModel` alongside them.
+
+Two further properties are worth knowing before enabling this:
+
+- **Restoring an invariant does not reduce the error.** The displacement is
+  orthogonal to the compression error, so it moves the state further from the
+  uncompressed one, never closer. What it buys is that the computed trajectory
+  keeps solving the equation you asked for, which is a different thing from
+  being closer to its solution.
+- **Only invariants of the low-rank dynamics can be restored.** The energy
+  qualifies, and so does any sum of on-site operators, which covers the abelian
+  charges such as a total magnetization or a particle number. A conserved
+  quantity that is not such a sum, for instance the total spin `S^2` of an
+  SU(2)-symmetric chain, already drifts without any truncation, and restoring it
+  pins a value the dynamics does not maintain.
+
 ## `DigitalSimParams`
 
 Used for circuit simulation. Set non-empty `observables` for expectation values,
